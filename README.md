@@ -1,31 +1,31 @@
 # Restaurantes by Apps Faro
 
-Prototipo interactivo para los tres perfiles de la microapp de almuerzos a domicilio y oficina.
+Aplicación web para vender **almuerzos con entrega a domicilio u oficina**: menús por día, zonas y tarifas de envío, pago por transferencia con comprobante, verificación manual, preparación y entrega. Incluye administración comercial de restaurantes y suscripciones de Apps Faro.
 
-## Enlaces de las demostraciones (al habilitar GitHub Pages)
+## Enlaces
 
-- **Panel general Apps Faro:** https://appsfaro.github.io/restaurante/#/faro/home
-- **Panel del restaurante:** https://appsfaro.github.io/restaurante/#/restaurante/home
-- **Aplicación del cliente:** https://appsfaro.github.io/restaurante/#/cliente/home
+- [Administrador general](https://appsfaro.github.io/restaurante/#/faro/home)
+- [Administrador de restaurante](https://appsfaro.github.io/restaurante/#/restaurante/home)
+- [Cliente del restaurante](https://appsfaro.github.io/restaurante/#/cliente/home)
 
-Los enlaces internos del prototipo también funcionan para pantallas individuales, como:
-- Menú semanal: https://appsfaro.github.io/restaurante/#/restaurante/menu
-- Pagos: https://appsfaro.github.io/restaurante/#/restaurante/payments
-- Entregas: https://appsfaro.github.io/restaurante/#/restaurante/deliveries
+## Componentes
 
-## Estado
+- `index.html`: interfaz de operación real, responsive, sin información de prueba.
+- `worker/src/index.js`: servidor seguro para autenticación propia y operaciones Firestore.
+- `worker/wrangler.toml`: configuración de despliegue con Cloudflare Worker.
+- `CONFIGURACION.md`: pasos exactos para conectar el servidor al proyecto Firebase `restaurantes-81aa1`.
+- `demo.html`: prototipo visual anterior conservado como referencia de diseño, **no** operativo.
 
-- `index.html`: demo estática navegable, sin instalación ni build.
-- Todos los datos son ilustrativos. Los comprobantes no se suben ni se verifican, los pagos no son reales y ninguna cuenta está conectada a Firebase.
-- No se deben ingresar claves reales ni datos de clientes.
+## Estado de conexión
 
-## Activar la publicación (GitHub Free)
+El frontend ya puede cargar información persistente, pero la API necesita una **implantación independiente**. Sin esa API, GitHub Pages muestra una pantalla de conexión y no inventa negocios, pagos o pedidos. Consulta [CONFIGURACION.md](CONFIGURACION.md) para completar el despliegue.
 
-El repositorio debe ser **público** para activar GitHub Pages gratuitamente. En GitHub:
-1. `Settings → General → Danger Zone → Change visibility → Public` (esto publica el código del prototipo).
-2. `Settings → Pages → Source: Deploy from a branch`.
-3. Seleccionar `main` y `/(root)`; pulsar `Save`.
+No introducir tokens, contraseñas, cuentas de servicio ni claves privadas en este repositorio público.
 
-GitHub Pages es para presentar esta **demo estática**, no para operar un SaaS comercial, cobrar suscripciones o recibir información de clientes.
+## Seguridad y limitaciones
 
-Proyecto comercial: https://appsfaro.com/
+- Firestore mantiene bloqueado el acceso directo del cliente (`allow read, write: if false`).
+- Usuarios y PIN: hash con sal, PBKDF2-600000 y secreto privado en el backend; límites de intentos y sesiones firmadas.
+- Verificación del dinero siempre manual. Un comprobante nunca equivale automáticamente a pago recibido.
+- Adjuntos pequeños limitados y privados; antes de producción ampliar a almacenamiento específico de archivos, verificación del teléfono, protección antibots y manejo de incidentes.
+- Esta versión es una **base funcional de integración**, no un SaaS listo para clientes de pago hasta desplegar API, auditar seguridad y realizar pruebas con datos reales.
