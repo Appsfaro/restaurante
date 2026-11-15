@@ -36,7 +36,7 @@ async function token(env){
   if(!resp.ok)throw E(502,'No se pudo autenticar con Firestore');const body=await resp.json();oauthCache={email:c.client_email,value:body.access_token,expires:now+Math.min(Number(body.expires_in)||3600,3600)};return body.access_token;
 }
 async function fs(env,path,method='GET',body=null,query=''){
-  const url=BASE+'/'+path+query;
+  const url=BASE+(path.startsWith(':')?'':'/')+path+query;
   const res=await fetch(url,{method,headers:{authorization:'Bearer '+await token(env),'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
   if(res.status===404)return null;
   if(!res.ok){const data=await res.text();if(res.status===409||res.status===412)throw E(409,'El registro ya existe o fue actualizado. Actualiza la página e inténtalo nuevamente.');throw E(502,'Error de Firestore ('+res.status+'): '+data.slice(0,160))}
