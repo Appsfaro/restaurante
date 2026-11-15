@@ -1,0 +1,9 @@
+name = "appsfaro-restaurantes-api"
+main = "src/index.js"
+compatibility_date = "2026-11-15"
+workers_dev = true
+# Los secretos se guardan en Cloudflare, nunca en GitHub:
+# GOOGLE_SERVICE_ACCOUNT (JSON de cuenta de servicio Firebase / Google Cloud)
+# SESSION_SECRET (valor aleatorio de >= 32 caracteres)
+# PASSWORD_PEPPER (valor aleatorio de >= 32 caracteres)
+# BOOTSTRAP_TOKEN (clave única de instalación)
