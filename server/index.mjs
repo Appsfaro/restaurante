@@ -39,7 +39,7 @@ const server=http.createServer(async(req,res)=>{
       const inlineScript=html.toString('utf8').match(/<script>([\s\S]*?)<\/script>/)?.[1]||'';
       const scriptHash="'sha256-"+createHash('sha256').update(inlineScript).digest('base64')+"'";
 
-      res.writeHead(200,{...common,'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' "${scriptHash}"; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"});
+      res.writeHead(200,{...common,'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' "+scriptHash+"; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"});
       res.end(html);return
     }
     let size=0,chunks=[];
