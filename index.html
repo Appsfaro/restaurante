@@ -64,7 +64,7 @@ function empty(text){return `<div class="empty">${H(text)}</div>`}
 function restMenu(){const selected=state.menus.find(m=>m.date===state.day)||{};const options=(selected.options||[]).filter(x=>x.kind!=='special').map(x=>x.name+' | '+(x.priceCents/100).toFixed(2)).join('\n');const specials=(selected.options||[]).filter(x=>x.kind==='special').map(x=>x.name+' | '+(x.priceCents/100).toFixed(2)).join('\n');return `${intro('Menú semanal','Publica sopas, segundos y platos especiales para cada día. Los precios se guardan en centavos para evitar errores.')}<div class="columns"><div class="card"><h2>Editar menú por fecha</h2><form id="menu-form" class="form" style="margin-top:20px">${F('date','Fecha','date',state.day,'required')}${F('soup','Sopa del día','text',selected.soup||'')}${textarea('options','Opciones de almuerzo: una por línea, nombre | precio',options||'Pollo a la plancha | 3.50\nSeco de carne | 3.50\nPescado apanado | 3.50',7)}${textarea('specials','Platos especiales: nombre | precio (opcional)',specials,3)}<label class="row" style="justify-content:flex-start"><input type="checkbox" name="published" ${selected.published?'checked':''}> Publicar menú para los clientes</label><button type="submit" class="button primary">Guardar menú</button></form>${button('Copiar la semana anterior en borrador','copy-week','light')}<p class="hint" style="margin-top:14px">Para un plato especial, añade otra línea con su propio precio. Los pedidos pasados mantienen el importe acordado al comprar.</p></div><div class="card"><h2>Calendario configurado</h2><div class="stack" style="margin-top:15px">${state.menus.length?state.menus.sort((a,b)=>a.date.localeCompare(b.date)).map(m=>`<div class="row" style="padding:12px;border-bottom:1px solid var(--line)"><div><b>${H(dateLabel(m.date))}</b><p class="hint">${H(m.soup||'Sin sopa')} · ${(m.options||[]).length} opciones</p></div><div class="row wrap"><span class="tag ${m.published?'':'warning'}">${m.published?'Publicado':'Borrador'}</span><button data-action="choose-date" data-date="${H(m.date)}" class="button small light">Editar</button></div></div>`).join(''):empty('Aún no has configurado ningún menú.')}</div></div></div>`}
 const statuses={pending:'Verificando transferencia',confirmed:'Pago confirmado',preparing:'En preparación',in_route:'En camino',delivered:'Entregado',rejected:'Pago rechazado',refund_pending:'Devolución pendiente',refunded:'Dinero devuelto'};
 const nextStatuses={pending:[['confirmed','Confirmar transferencia bancaria'],['rejected','Rechazar']],confirmed:[['preparing','Preparar'],['refund_pending','Solicitar devolución']],preparing:[['in_route','Enviar'],['refund_pending','Devolver']],in_route:[['delivered','Entregado']],refund_pending:[['refunded','Registrar devolución']]};
-function orderTable(rows,withActions=false){return `<div class="table-scroll"><table><thead><tr><th>Pedido</th><th>Cliente</th><th>Almuerzo</th><th>Entrega</th><th>Total</th><th>Estado</th>${withActions?'<th>Acciones</th>':''}</tr></thead><tbody>${rows.map(o=>`<tr><td><b>#${H((o.id||'').slice(0,8))}</b><small class="muted" style="display:block">${H(dateLabel(o.date))}</small></td><td>${H(o.customerName||'')}</td><td>${H(o.quantity||1)} × ${H(o.optionName||'')}</td><td>${H(o.zone||o.address||'')}</td><td><b>${money(o.totalCents)}</b></td><td><span class="tag ${o.status==='pending'?'warning':o.status==='rejected'?'danger':''}">${H(statuses[o.status]||o.status)}</span></td>${withActions?`<td>${button('Comprobante','receipt','light',`data-id="${H(o.id)}"`)} ${(nextStatuses[o.status]||[]).map(([to,label])=>button(label,'order-status',to==='rejected'?'danger':'primary',`data-id="${H(o.id)}" data-status="${H(to)}"`)).join(' ')}</td>`:''}</tr>`).join('')}</tbody></table></div>`}
+function orderTable(rows,withActions=false){return `<div class="table-scroll"><table><thead><tr><th>Pedido</th><th>Cliente</th><th>Almuerzo</th><th>Entrega</th><th>Total</th><th>Estado</th>${withActions?'<th>Acciones</th>':''}</tr></thead><tbody>${rows.map(o=>`<tr><td><b>#${H((o.id||'').slice(0,8))}</b><small class="muted" style="display:block">${H(dateLabel(o.date))}</small></td><td>${H(o.customerName||'')}</td><td>${H(o.quantity||1)} × ${H(o.optionName||'')}</td><td>${H(o.zone||o.address||'')}</td><td><b>${money(o.totalCents)}</b></td><td><span class="tag ${o.status==='pending'?'warning':o.status==='rejected'?'danger':''}">${H(statuses[o.status]||o.status)}</span>${!withActions&&o.deliveryCode&&['confirmed','preparing','in_route'].includes(o.status)?'<small class="muted" style="display:block">Código de recepción: '+H(o.deliveryCode)+'</small>':''}</td>${withActions?`<td>${button('Comprobante','receipt','light',`data-id="${H(o.id)}"`)} ${(nextStatuses[o.status]||[]).map(([to,label])=>button(label,'order-status',to==='rejected'?'danger':'primary',`data-id="${H(o.id)}" data-status="${H(to)}"`)).join(' ')}</td>`:''}</tr>`).join('')}</tbody></table></div>`}
 function restOrders(deliveries=false){const rows=state.orders.filter(o=>!deliveries||['confirmed','preparing','in_route','delivered'].includes(o.status));return `${intro(deliveries?'Entregas y reparto':'Pedidos y pagos',deliveries?'Organiza los pedidos confirmados por destino y estado.':'Comprueba la transferencia en tu banco antes de confirmar. No basta con recibir una captura.')}${rows.length?`<div class="card">${orderTable(rows,true)}</div>`:empty(deliveries?'No hay entregas registradas.':'Aún no hay pedidos para revisar.')}<p class="smallnote" style="margin-top:16px">Los cambios de estado quedan registrados. Los comprobantes solo son visibles para usuarios autorizados del mismo restaurante.</p>`}
 function restClients(){return intro('Clientes','Cuentas del restaurante y recuperación asistida de PIN.')+
  '<div class="card">'+(state.customers.length?'<div class="table-scroll"><table><thead><tr><th>Nombre</th><th>Teléfono</th><th>Dirección</th><th>Acción</th></tr></thead><tbody>'+
@@ -129,7 +129,7 @@ function profile(){
  return intro('Mi cuenta','Datos de acceso y recuperación de seguridad.')+
  '<div class="card stack"><h2>'+H(state.user?.name||'Cliente')+'</h2>'+
  '<p class="sub">Teléfono: '+H(state.user?.username||'')+'<br>Restaurante: '+H(state.slug)+'</p>'+
- '<h3>Cambiar mi PIN</h3><form id="account-form" class="form">'+
+ '<h3>Mis avisos</h3>'+button('Activar avisos del navegador','enable-notifications','light')+'<p class="hint">Los cambios se comprueban cada 30 segundos mientras la aplicación está abierta.</p><h3>Cambiar mi PIN</h3><form id="account-form" class="form">'+
  F('currentSecret','PIN actual','password','','required autocomplete="current-password"')+
  F('newSecret','Nuevo PIN de 6 a 8 números','password','','required minlength="6" maxlength="8" inputmode="numeric"')+
  '<button class="button primary" type="submit">Cambiar PIN y cerrar sesiones antiguas</button></form>'+
@@ -177,6 +177,7 @@ if(form.id==='proof-form'){
 }catch(error){captureError(error)}finally{if(submit)submit.disabled=false}});
 document.addEventListener('click',async ev=>{const btn=ev.target.closest('[data-action]');if(!btn)return;ev.preventDefault();const type=btn.dataset.action;try{
 if(type==='logout'){signout();return}if(type==='change-api'){signout(false);state.api='';localStorage.removeItem('appsfaro_api');render();return}if(type==='bootstrap'){state.setup=true;render();return}if(type==='register'){state.register=true;render();return}if(type==='back'){state.setup=false;state.register=false;render();return}if(type==='repo'){window.open('https://github.com/Appsfaro/restaurante','_blank','noopener');return}if(type==='public-menu'){await guestMenu();return}if(type==='choose-date'){state.day=btn.dataset.date;render(!state.user);return}if(type==='choose-meal'){if(!state.user){notify('Inicia sesión o crea una cuenta para realizar un pedido.',true);return}state.reservation=null;sessionStorage.removeItem('appsfaro_reservation');state.day=btn.dataset.date;state.selectedOption=btn.dataset.option;state.page='checkout';location.hash='#/cliente/checkout';render();return}
+if(type==='enable-notifications'){if(!('Notification' in window)){alert('Este navegador no admite notificaciones');return}const result=await Notification.requestPermission();notify(result==='granted'?'Notificaciones del navegador activadas.':'No se concedieron permisos para notificaciones.');return}
 if(type==='copy-week'){
  const suggested=new Date((state.day||today())+'T12:00:00Z');
  const diff=(suggested.getUTCDay()+6)%7;suggested.setUTCDate(suggested.getUTCDate()-diff);
@@ -207,6 +208,10 @@ if(type==='order-status'){
   if(!confirm('¿Verificaste en la cuenta bancaria una transferencia de '+money(body.receivedCents)+' con referencia '+body.bankReference+'?'))return
  }else if(target==='rejected'||target==='refund_pending'){
   const why=prompt('Indica el motivo para conservarlo en el historial:','');if(why===null)return;body.reason=why.trim()
+  }else if(target==='in_route'){
+  const courier=prompt('Nombre de la persona que realizará la entrega:','');if(courier===null)return;body.deliveryPerson=courier.trim()
+ }else if(target==='delivered'){
+  const code=prompt('Pide al cliente su código de recepción de 6 números:','');if(code===null)return;body.deliveryCode=code.trim()
  }else if(target==='refunded'){
   const ref=prompt('Referencia bancaria de la devolución YA REALIZADA:','');if(ref===null)return;body.refundReference=ref.trim();
   body.refundCents=order.totalCents;
@@ -217,6 +222,21 @@ if(type==='order-status'){
 }
 if(type==='save-business'||type==='toggle-business'){const r=state.restaurants.find(x=>x.slug===btn.dataset.slug);const date=document.querySelector('[data-date="'+btn.dataset.slug+'"]')?.value||r.subscriptionUntil;await api('/api/admin/restaurants/'+encodeURIComponent(r.slug),{method:'PATCH',body:{active:type==='toggle-business'?!r.active:r.active,subscriptionUntil:date}});await refresh();notify('Suscripción actualizada.');return}
 }catch(error){captureError(error)}});
+// Avisos mientras la aplicación permanezca abierta; no se envían mensajes externos.
+setInterval(async()=>{
+ if(!state.api||!state.token||!state.user||document.visibilityState!=='visible')return;
+ if(document.activeElement?.closest?.('form'))return;
+ const old=new Map(state.orders.map(o=>[o.id,o.status]));
+ try{
+  await refresh();
+  const changed=state.orders.filter(o=>old.has(o.id)&&old.get(o.id)!==o.status);
+  if(changed.length){
+    state.message='Actualización: pedido #'+changed[0].id.slice(0,8)+' · '+(statuses[changed[0].status]||changed[0].status);
+    if(window.Notification&&Notification.permission==='granted')new Notification('Restaurantes Apps Faro',{body:state.message});
+  }
+  render()
+ }catch(error){console.warn('No se pudo sincronizar pedidos',error.message)}
+},30000);
 window.addEventListener('hashchange',async()=>{route();if(state.user){try{if(state.page==='clients'&&state.role==='restaurante')state.customers=await api('/api/customers');render()}catch(e){captureError(e)}}else render()});
 (async()=>{route();if(state.api&&state.user){try{await refresh()}catch(error){state.error=error.message}}render()})();
 </script></body></html>
