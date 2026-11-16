@@ -323,7 +323,22 @@ async function route(req,env){
   catch(error){if(error.status===409)throw E(409,'El pedido cambió o esta operación bancaria ya se utilizó');throw error}
   return {id,status:next,paymentStatus:newPayment.status};
  }
- if(path==='/api/admin/subscription-payments'&&method==='GET'){
+if(path==='/api/admin/analytics'&&method==='GET'){
+ role(s,'platform');const restaurants=await list(env,'restaurantes',250);
+ const orders=await list(env,'orders',250),menus=await list(env,'menus',250);
+ const figures=restaurants.map(rest=>{
+   const own=orders.filter(o=>o.restaurantId===rest.slug);
+   const paid=own.filter(o=>['confirmed','preparing','in_route','delivered'].includes(o.status));
+   const published=menus.filter(m=>m.restaurantId===rest.slug&&m.published);
+   return {restaurantId:rest.slug,name:rest.name,orders:own.length,pending:own.filter(o=>o.status==='pending').length,
+     confirmed:paid.length,confirmedCents:paid.reduce((sum,o)=>sum+Number(o.totalCents||0),0),
+     menuDays:published.length,lastOrderAt:own.map(o=>o.createdAt||'').sort().pop()||null,
+     subscriptionUntil:rest.subscriptionUntil,active:rest.active!==false};
+ });
+ return {figures,partial:orders.length>=250||menus.length>=250||restaurants.length>=250,
+   generatedAt:new Date().toISOString(),note:'Las cifras se limitan a los 250 registros recientes disponibles de cada colección'};
+}
+  if(path==='/api/admin/subscription-payments'&&method==='GET'){
   role(s,'platform');return list(env,'subscription_payments',250)
  }
  if(path==='/api/admin/subscription-payments'&&method==='POST'){
