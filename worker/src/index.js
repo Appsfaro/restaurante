@@ -189,7 +189,8 @@ async function route(req,env){
    const b=await readBody(req),file=proofBytes(b.proof||{}),proofHash=await sha(file.binary),at=new Date().toISOString();
    const person=await get(env,'customers/'+s.sub);if(!person)throw E(401,'Cliente no encontrado');
    const bankReference=String(b.bankReference||'').trim().slice(0,100);
-   const order={...reservation,id,customerName:person.name,phone:person.phone,bankReference,
+   const deliveryCode=String(crypto.getRandomValues(new Uint32Array(1))[0]%1000000).padStart(6,'0');
+   const order={...reservation,id,deliveryCode,customerName:person.name,phone:person.phone,bankReference,
      status:'pending',paymentStatus:'reported',receiptId:proofHash,createdAt:at,updatedAt:at};
    delete order.__updateTime;delete order.expiresAt;delete order.submittedAt;delete order.orderId;
    const objectKey='comprobantes/'+s.restaurantId+'/'+id+'/'+proofHash;const stored=await storeReceipt(env,objectKey,file.binary,file.mime);
@@ -274,7 +275,7 @@ async function route(req,env){
 
  if(path==='/api/customers'&&method==='GET'){role(s,'owner');return (await query(env,'customers','restaurantId',s.restaurantId)).map(c=>({id:c.id,name:c.name,phone:c.phone,address:c.address,createdAt:c.createdAt}))}
  if(path==='/api/orders'&&method==='GET'){
-  role(s,'owner','customer');const rows=await query(env,'orders',s.role==='owner'?'restaurantId':'customerId',s.role==='owner'?s.restaurantId:s.sub,300);return rows.map(({__updateTime,...a})=>a).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  role(s,'owner','customer');const rows=await query(env,'orders',s.role==='owner'?'restaurantId':'customerId',s.role==='owner'?s.restaurantId:s.sub,300);return rows.map(({__updateTime,deliveryCode,...a})=>({...a,...(s.role==='customer'?{deliveryCode}:{})})).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
  }
  if(path==='/api/orders'&&method==='POST')throw E(409,'Antes de subir un comprobante debes confirmar el importe y reservar el pedido.');
  const attachment=path.match(/^\/api\/orders\/([a-f0-9-]{36})\/receipt$/);
@@ -311,7 +312,9 @@ async function route(req,env){
    if(reference.length<5||returned!==o.totalCents)throw E(400,'Registra la referencia bancaria real y devolución completa');
    newPayment={...payment,status:'refunded',refundReference:reference,refundedCents:returned,refundedAt:at,refundedBy:s.sub};
   }
-  const updated={...o,status:next,paymentStatus:newPayment.status,updatedAt:at,
+  if(next==='in_route'&&!String(b.deliveryPerson||'').trim())throw E(400,'Indica quién realizará la entrega');
+  if(next==='delivered'&&String(b.deliveryCode||'').trim()!==String(o.deliveryCode||''))throw E(409,'El código de recepción proporcionado por el cliente no coincide');
+  const updated={...o,status:next,paymentStatus:newPayment.status,updatedAt:at,deliveryPerson:next==='in_route'?String(b.deliveryPerson).trim().slice(0,80):o.deliveryPerson||null,deliveredAt:next==='delivered'?at:o.deliveredAt||null,
     verifiedBy:next==='confirmed'?s.sub:o.verifiedBy||null};
   const event={orderId:id,restaurantId:s.restaurantId,action:next,actor:s.sub,createdAt:at,
     paymentStatus:newPayment.status,reference:next==='confirmed'?newPayment.verifiedReference:undefined};
