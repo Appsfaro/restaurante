@@ -1,93 +1,107 @@
-# Restaurantes Apps Faro — conexión real a Firebase
+# Instalación real de Restaurantes — Apps Faro
 
-## Estado actual
+## Estado
+El repositorio contiene **código de la aplicación y del servidor**, pero no es una instalación productiva hasta que se despliegue y configure la infraestructura. No hay pagos automáticos ni confirmación bancaria automática.
 
-La interfaz real está publicada desde `index.html` por GitHub Pages. No muestra datos ficticios y no admite pedidos sin un servidor auténtico. El servidor está implementado en `worker/src/index.js`, pero **no se publica automáticamente** hasta que se configuren las credenciales y se despliegue Cloudflare Worker.
+- Sitio estático de demostración: https://appsfaro.github.io/restaurante/demo.html
+- Repositorio: https://github.com/Appsfaro/restaurante
+- Producción prevista: \`https://restaurante.appsfaro.com\` (NO configurada)
+- Firebase existente: proyecto \`restaurantes-81aa1\`, Firestore predeterminado.
+- Backend: Node.js ≥22, servido conjuntamente con la app; puede usar Render u otro hosting con CPU suficiente.
+- Adjuntos: Cloudflare R2 u otro almacén privado compatible. **Obligatorio** para operar en producción.
 
-## 1. Proteger Firestore
-
-En Firebase `restaurantes-81aa1` > Firestore > Reglas, mantener la política inicial de cierre total a los clientes web:
-
-```javascript
+## 1. Mantén Firestore protegido
+En Firebase → Cloud Firestore → Reglas:
+\`\`\`
 rules_version = '2';
 service cloud.firestore {
  match /databases/{database}/documents {
   match /{document=**} { allow read, write: if false; }
  }
 }
-```
+\`\`\`
+No habilites reglas abiertas. La API usa **credenciales privadas de servidor** y verifica los permisos por restaurante. Firestore Admin/IAM no aplica estas reglas del cliente.
 
-**No** cambiar a `allow read, write: if true`. El servidor accede mediante cuenta de servicio e impone permisos por restaurante. El código de esa cuenta nunca se guarda en el repositorio público.
+## 2. Cuenta de servicio de Firebase
+En Firebase → Configuración del proyecto → Cuentas de servicio, genera una clave privada del proyecto solo para uso de servidor. Idealmente utiliza una cuenta de servicio dedicada con permisos mínimos (por ejemplo Cloud Datastore User/roles/datastore.user). Nunca subas ese archivo a GitHub, no lo pegues en chats y no lo compartas con clientes.
 
-## 2. Preparar un servidor seguro
+En el proveedor de hosting, configura un secreto \`GOOGLE_SERVICE_ACCOUNT\` con el JSON completo de esa cuenta.
+El código comprueba que \`project_id\` sea \`restaurantes-81aa1\`.
 
-1. Crea una cuenta gratuita en [Cloudflare](https://dash.cloudflare.com/) si aún no la tienes.
-2. En Google Cloud del proyecto `restaurantes-81aa1`, crea una **cuenta de servicio exclusiva** con acceso mínimo a Firestore (Cloud Datastore User), y genera un JSON de clave privada. Guarda la clave con seguridad; no la envíes al chat ni la agregues a GitHub.
-3. En Windows, con Node.js, clona el repositorio y entra a `worker`:
+## 3. Crear almacenamiento privado de comprobantes (R2)
+En Cloudflare → R2, crea un bucket privado. Genera un token S3 API con permisos de lectura/escritura **solo sobre ese bucket**; no habilites enlaces públicos del bucket.
 
-```powershell
-git clone https://github.com/Appsfaro/restaurante.git
-cd restaurante\worker
-npx wrangler login
-```
+Configura las siguientes variables privadas del servicio:
+- \`R2_ENDPOINT\`: URL S3 del R2 de tu cuenta, incluyendo https
+- \`R2_BUCKET\`: nombre exacto del bucket
+- \`R2_ACCESS_KEY_ID\`: ID secreto S3
+- \`R2_SECRET_ACCESS_KEY\`: clave secreta S3
+- \`REQUIRE_OBJECT_STORAGE=true\`
 
-4. Configura los secretos con los siguientes comandos. Wrangler pedirá el valor de cada uno, sin publicarlo en GitHub. Para `GOOGLE_SERVICE_ACCOUNT` pega el JSON completo de la cuenta de servicio (una sola línea):
+La API registra el hash del archivo en Firestore y lo guarda físicamente en R2. Los comprobantes se leen solo mediante un endpoint autenticado y autorizado. Si falta R2, la versión de producción rechaza guardar un comprobante en lugar de exponerlo.
 
-```powershell
-npx wrangler secret put GOOGLE_SERVICE_ACCOUNT
-npx wrangler secret put SESSION_SECRET
-npx wrangler secret put PASSWORD_PEPPER
-npx wrangler secret put BOOTSTRAP_TOKEN
-```
+## 4. Desplegar en Render (alternativa)
+1. Abre https://dashboard.render.com/ y conecta GitHub con acceso al repositorio \`Appsfaro/restaurante\`.
+2. Selecciona **New → Blueprint**, elige este repo y el archivo \`render.yaml\`.
+3. El blueprint establece una instancia **Free únicamente para pruebas**. Render advierte que las instancias Free se suspenden por inactividad y no deben utilizarse para servicios comerciales de producción. Antes de lanzar a clientes, cambia a un plan con recursos y disponibilidad adecuados, revisando su costo y dando tu aprobación.
+4. Completa los secretos privados mencionados arriba.
+5. \`SESSION_SECRET\`, \`PASSWORD_PEPPER\` y \`BOOTSTRAP_TOKEN\` deben ser valores aleatorios independientes y largos. El blueprint puede generar valores por defecto; guarda el \`BOOTSTRAP_TOKEN\` de forma privada para crear la primera cuenta, y elimínalo del entorno cuando hayas completado la instalación.
+6. Una vez desplegado, entra en la URL HTTPS que Render te asigne. La web y la API estarán bajo el **mismo origen**: los clientes no deben configurar URL de API.
+7. En el primer acceso crea el administrador Apps Faro usando el token de instalación y una contraseña robusta.
 
-Los tres últimos valores deben ser distintos, aleatorios y largos (32 caracteres o más). Para generar cada uno:
+**Nunca introduzcas claves de cuenta de servicio, tokens de R2 o contraseñas de clientes en archivos del repositorio.**
 
-```powershell
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
+## 5. Vincular el subdominio
+Una vez probada la aplicación en su URL HTTPS temporal, configura un dominio personalizado en el hosting y los registros DNS que el proveedor indique:
+\`restaurante.appsfaro.com\`.
 
-5. Despliega la API:
+No reemplaces el dominio principal \`appsfaro.com\`, que continúa como página comercial.
 
-```powershell
-npx wrangler deploy
-```
+## 6. Flujo verificado de negocios, compras y pagos
 
-La URL será similar a `https://appsfaro-restaurantes-api.<tu-cuenta>.workers.dev`. Comprueba `https://.../api/health`, que debe indicar `firestoreConfigured: true`.
+### Administrador Apps Faro
+- Crea restaurante, propietario y suscripción.
+- Registra renovaciones manuales con monto, referencia y nueva fecha; \`subscription_payments\` guarda el historial.
+- Suspende/restablece restaurantes.
+- Los pagos de suscripciones Apps Faro y las transferencias de clientes del restaurante son **completamente diferentes**.
 
-**Nota de costos:** Cloudflare Workers Free tiene límites estrictos de tiempo de CPU (10 ms por petición a fecha de noviembre de 2026). El hashing PBKDF2-600000 puede superar este límite. Para acceso confiable en producción, se deberá evaluar Workers Paid u otro backend compatible, verificar los costos y configurar límites de facturación antes de habilitar pagos reales. La aplicación en GitHub Pages no utiliza por sí sola un backend. Nunca rebajes la seguridad del hashing como solución al límite de CPU.
+### Propietario
+- Guarda identidad, cuenta bancaria, tarifas de envío gratis/fija/zonas y cierre por día.
+- Publica menús con segundos y especiales; puede copiar en borrador la semana anterior.
+- Ve pagos declarados. Solo confirma después de comprobar en el banco **referencia real e importe exacto**. El servidor impide repetir la misma referencia verificada para dos pedidos del mismo restaurante.
+- Rechaza comprobantes, solicita devolución para pedidos confirmados e informa la referencia del reintegro cuando realmente devolvió el dinero.
+- Registra nombre del repartidor y confirma entrega con código de 6 dígitos facilitado por el cliente.
 
-## 3. Enlazar GitHub Pages con la API
+### Cliente
+- Se registra con nombre, teléfono y PIN (este primer prototipo NO valida que sea dueño de ese teléfono).
+- Selecciona fecha, plato, cantidad, sector y dirección.
+- La API calcula el **total exacto**, genera reserva de 30 minutos y **solo entonces** muestra el banco para transferir.
+- Sube imagen/PDF del comprobante. Archivo duplicado exacto se rechaza.
+- El restaurante verifica manualmente la transferencia. El pedido cambia de estado y se actualiza periódicamente en la app mientras esté abierta.
+- Si la reserva ha vencido después de que el cliente transfirió, **no debe pagar dos veces**: el restaurante conciliará el movimiento directamente. Ese caso requiere atención manual.
 
-1. Abre https://appsfaro.github.io/restaurante/
-2. En la pantalla de configuración introduce la URL HTTPS de tu Worker. Esta es una URL pública, no una clave privada.
-3. Comprueba que la conexión sea correcta.
-4. Selecciona «Administrador general» y «Primera instalación».
-5. Escribe el `BOOTSTRAP_TOKEN` guardado solo en Cloudflare y define tu usuario y contraseña robusta (mínimo 12 caracteres). La instalación solo puede ejecutarse una vez.
-6. Entra a la administración general, crea el primer restaurante y asigna su vencimiento de suscripción.
-7. El propietario ingresa a su panel, registra banco, horario y tarifa de envío, publica el menú y comparte su código de restaurante.
-8. Cada cliente se registra con teléfono, nombre y PIN de 6 a 8 números, luego realiza un pedido con su comprobante y el dueño valida el ingreso bancario manualmente.
+## 7. Limitaciones que deben quedar resueltas antes de abrir a clientes reales
+- **No hay integración bancaria ni pasarela de cobro**: las referencias y cantidades son confirmadas manualmente por el dueño. Capturas/PDF no prueban recepción de fondos.
+- No hay recuperación del PIN mediante SMS ni validación automática del teléfono: el propietario puede regenerarlo después de verificar la identidad del cliente fuera de la app.
+- No hay envío de WhatsApp, correo o push remoto cuando la app está cerrada; los cambios se consultan cada 30 segundos mientras esté abierta.
+- Envíos por zonas usan selección del cliente; las direcciones deben cotejarse para evitar sectores incorrectos. No hay geocodificación ni ruteo automático.
+- No hay conexión bancaria para reembolsos: registrar \`refunded\` exige una devolución real realizada externamente.
+- No se ha auditado la solución por un especialista independiente ni probado contra el Firestore real del proyecto. Antes del lanzamiento deben añadirse monitoreo, protección antiabuso escalable, copias de seguridad y política de privacidad válida para Ecuador.
 
-## 4. Enlaces
+## 8. Comprobación técnica antes del lanzamiento
+En GitHub → Actions → **Verificar Restaurantes**, las pruebas automáticas deben estar en verde. Las pruebas utilizan Firestore simulado y no sustituyen comprobaciones reales.
 
-- Administración general: https://appsfaro.github.io/restaurante/#/faro/home
-- Restaurante: https://appsfaro.github.io/restaurante/#/restaurante/home
-- Cliente: https://appsfaro.github.io/restaurante/#/cliente/home
-- Fuente de la API: `worker/src/index.js`.
+Realiza pruebas autorizadas contra Firebase con dos restaurantes y dos clientes:
+1. alta/renovación/suspensión de restaurante;
+2. menú publicado y cerrado, incluyendo horario del día;
+3. precio exacto en envío gratuito/fijo/zona;
+4. reserva antes del cierre + comprobante después, y expiración de reserva;
+5. comprobantes idénticos y pedidos simultáneos;
+6. confirmación bancaria con importe distinto y referencia duplicada;
+7. rechazo y reintegro;
+8. repartidor, código de entrega, cambios de estado;
+9. comprobación de separación entre restaurantes;
+10. restaurar PIN y revocar sesiones.
 
-## Alcance y advertencias de la primera versión
-
-- El portal **sí** implementa operaciones reales de lectura/escritura en Firestore una vez desplegada y configurada la API. Antes de eso no hay operaciones persistentes.
-- Los comprobantes JPEG, PNG, WEBP y PDF pequeños (máximo aproximadamente 400 KB) se almacenan en una colección privada de Firestore. Es una solución inicial que **no debe escalarse** sin almacenamiento privado de archivos (R2 o Firebase Storage), retención limitada y análisis de malware.
-- Los pagos bancarios se verifican **manualmente**. No se confirma dinero por el hecho de subir un archivo.
-- Un PIN con teléfono **sin validación del teléfono** no es adecuado para abrir acceso al público masivamente. Antes del lanzamiento general integrar verificación de teléfono, recuperación de credenciales, protección antibots, monitoreo, cumplimiento de protección de datos y procedimientos de reembolso.
-- La autenticación usa PBKDF2-HMAC-SHA-256, 600 000 iteraciones y un secreto del servidor (pepper); el hash y la sal se guardan en Firestore, nunca la contraseña ni el PIN originales.
-- Mantener permisos por restaurante, HTTPS, límites de intentos, tokens firmados y auditoría. La cuenta de servicio solo vive en Cloudflare Secrets.
-- GitHub Pages puede servir de interfaz durante pruebas, pero sus condiciones de uso no permiten usarlo para alojar directamente un SaaS comercial. Antes del lanzamiento se migrará la interfaz a alojamiento apropiado.
-
-## Verificación inicial
-
-- Entrar en `.../api/health` y ver que el servidor informa que está configurado.
-- Crear un restaurante con vencimiento futuro, entrar con su cuenta y guardar un menú publicado.
-- Registrar un cliente, hacer pedido con comprobante y revisar el listado desde el propietario.
-- Confirmar un pago solo después de verificar el banco, y avanzar a preparación, reparto y entrega.
-- Verificar que otro restaurante no puede leer pedidos ni comprobantes ajenos.
+## Costos
+Firestore tiene cuota gratuita bajo Spark. El blueprint de Render usa Free para validar pero no es alojamiento recomendable para producción; elegir plan de pago se hará solo con autorización. R2 tiene una cuota gratuita, pero los excesos pueden facturarse conforme a la cuenta. No se han habilitado servicios de pago en esta entrega.
