@@ -114,11 +114,12 @@ function proofBytes(proof){
  return {mime,raw,binary}
 }
 async function commitWrites(env,writes){return fs(env,':commit','POST',{writes})}
+function asBase64(data){let chars='';for(let i=0;i<data.length;i+=32768)chars+=String.fromCharCode(...data.subarray(i,i+32768));return btoa(chars)}
 async function storeReceipt(env,key,binary,mime){
  if(!env.RECEIPT_STORE?.put){
   if(String(env.REQUIRE_OBJECT_STORAGE||'').toLowerCase()==='true')throw E(503,'Falta configurar el almacenamiento privado de comprobantes');
   if(binary.length>390000)throw E(413,'Comprobante mayor que límite de Firestore; conecta almacenamiento privado');
-  return {base64:btoa(String.fromCharCode(...binary)),objectKey:null};
+  return {base64:asBase64(binary),objectKey:null};
  }
  await env.RECEIPT_STORE.put(key,binary,{httpMetadata:{contentType:mime}});
  return {base64:null,objectKey:key}
@@ -130,7 +131,7 @@ async function readReceipt(env,receipt){
   const blob=await env.RECEIPT_STORE.get(receipt.objectKey);
   if(!blob)throw E(404,'Archivo del comprobante no disponible');
   const arr=new Uint8Array(await blob.arrayBuffer());
-  return btoa(String.fromCharCode(...arr))
+  return asBase64(arr)
  }
  if(!receipt.base64)throw E(404,'Archivo no disponible');
  return receipt.base64
