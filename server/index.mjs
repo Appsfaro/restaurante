@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import worker from '../worker/src/index.js';
@@ -35,7 +36,10 @@ const server=http.createServer(async(req,res)=>{
     if(!url.pathname.startsWith('/api/')){
       if(!['/','/index.html'].includes(url.pathname)||req.method!=='GET'){res.writeHead(404,common);res.end('No encontrado');return}
       const html=await readFile(indexPath);
-      res.writeHead(200,{...common,'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"});
+      const inlineScript=html.toString('utf8').match(/<script>([\s\S]*?)<\/script>/)?.[1]||'';
+      const scriptHash="'sha256-"+createHash('sha256').update(inlineScript).digest('base64')+"'";
+
+      res.writeHead(200,{...common,'content-type':'text/html; charset=utf-8','content-security-policy':"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' "${scriptHash}"; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"});
       res.end(html);return
     }
     let size=0,chunks=[];
