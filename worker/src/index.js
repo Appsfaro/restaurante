@@ -66,6 +66,55 @@ function publicRest(r){return {slug:r.slug,name:r.name,logo:r.logo||'',primary:r
 async function readBody(req){const len=Number(req.headers.get('content-length')||0);if(len>750000)throw E(413,'Archivo demasiado grande');const data=await req.text();if(data.length>750000)throw E(413,'Solicitud demasiado grande');try{return JSON.parse(data||'{}')}catch{throw E(400,'Solicitud JSON inválida')}}
 async function enforceRate(env,key,success=false){const id=await sha(key),path='attempts/'+id,now=Date.now();const x=await get(env,path);if(!success&&x?.until&&x.until>now)throw E(429,'Demasiados intentos. Vuelve a intentarlo más tarde');const attempts=success?0:(x?.until&&x.until<=now?1:((x?.attempts||0)+1));await put(env,path,{attempts,until:attempts>=5?now+20*60*1000:0,updatedAt:new Date().toISOString()});}
 async function checkRestaurant(env,slug,allowExpired=false){if(!cleanId(slug))throw E(400,'Restaurante inválido');const r=await get(env,'restaurantes/'+slug);if(!r)throw E(404,'Restaurante no encontrado');if(!allowExpired&&(r.active===false||!r.subscriptionUntil||r.subscriptionUntil<formatNow().date))throw E(403,'El restaurante no tiene una suscripción activa');return r}
+
+const amount = (n, label='Importe') => {if(!Number.isSafeInteger(Number(n))||Number(n)<0||Number(n)>1_000_000)throw E(400,label+' inválido');return Number(n)};
+const cleanTime = t => /^([01]\d|2[0-3]):[0-5]\d$/.test(t||'');
+const cutFor = (rest,date) => rest.cutoffs?.[new Date(date+'T12:00:00Z').getUTCDay()]||rest.cutoff||'11:00';
+const sameTenant = (s,slug) => {if(s.restaurantId!==slug)throw E(403,'Sin acceso a este restaurante')};
+function writeCreate(path,record){return {update:{name:'projects/'+DB+'/databases/(default)/documents/'+path,...toDoc(record)},currentDocument:{exists:false}}}
+function writeUpdate(path,record,updateTime){const {id,__updateTime,...data}=record;return {update:{name:'projects/'+DB+'/databases/(default)/documents/'+path,...toDoc(data)},currentDocument:{updateTime}}}
+async function quoteOrder(env,s,b,{enforceCutoff=true}={}){
+ role(s,'customer');const slug=s.restaurantId;const rest=await checkRestaurant(env,slug);
+ const date=String(b.date||'');
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||Number.isNaN(Date.parse(date+'T00:00:00Z')))throw E(400,'Fecha inválida');
+ const now=formatNow(),last=new Date(now.date+'T12:00:00Z');last.setUTCDate(last.getUTCDate()+7);
+ if(date<now.date||date>last.toISOString().slice(0,10))throw E(409,'Solo puedes pedir para los próximos siete días');
+ if(enforceCutoff&&date===now.date&&now.time>=cutFor(rest,date))throw E(409,'Los pedidos de hoy han cerrado. Selecciona otro día disponible.');
+ const menu=await get(env,'menus/'+slug+'_'+date);
+ if(!menu?.published)throw E(409,'Menú no disponible');
+ const option=(menu.options||[]).find(o=>o.id===String(b.optionId||''));
+ if(!option)throw E(400,'Selecciona un plato disponible');
+ const quantity=Number(b.quantity);
+ if(!Number.isInteger(quantity)||quantity<1||quantity>10)throw E(400,'Solo puedes pedir de 1 a 10 almuerzos');
+ const priceCents=amount(option.priceCents,'Precio de plato');if(priceCents<=0)throw E(409,'El plato no tiene precio válido');
+ const address=String(b.address||'').trim();if(address.length<12||address.length>250)throw E(400,'Indica una dirección de entrega válida');
+ let zone='',shippingCents=0;
+ const mode=rest.shipping?.mode||'free';
+ if(mode==='fixed')shippingCents=amount(rest.shipping.fixedCents,'Costo de envío');
+ else if(mode==='zones'){zone=String(b.zone||'').trim();const entry=(rest.shipping.zones||[]).find(z=>z.name===zone);if(!entry)throw E(400,'La zona de entrega no está disponible');shippingCents=amount(entry.priceCents,'Costo de envío')}
+ else if(mode!=='free')throw E(409,'Envío sin configurar');
+ const foodCents=priceCents*quantity,totalCents=foodCents+shippingCents;
+ if(totalCents>10_000_000)throw E(409,'Importe fuera de límite');
+ if(!rest.bank?.bank||!rest.bank?.account||!rest.bank?.owner)throw E(409,'El restaurante debe configurar su cuenta bancaria');
+ return {restaurantId:slug,customerId:s.sub,date,soup:menu.soup||'',optionId:option.id,optionName:option.name,
+   quantity,unitCents:priceCents,foodCents,shippingCents,totalCents,zone,address,
+   bank:{bank:rest.bank.bank,owner:rest.bank.owner,account:rest.bank.account,type:rest.bank.type||''},
+   notes:String(b.notes||'').slice(0,300),cutoff:cutFor(rest,date),shippingMode:mode}
+}
+function proofBytes(proof){
+ const mime=String(proof?.mime||''),raw=String(proof?.base64||'');
+ if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)||!raw||raw.length>560000||!/^[a-zA-Z0-9+/]+={0,2}$/.test(raw))throw E(400,'Adjunta un comprobante PDF o imagen menor a 400 KB');
+ let binary;try{binary=Uint8Array.from(atob(raw),c=>c.charCodeAt(0))}catch{throw E(400,'Archivo no válido')}
+ if(binary.length>400000)throw E(413,'Comprobante demasiado grande');
+ const match=mime==='application/pdf'?binary[0]===37&&binary[1]===80&&binary[2]===68&&binary[3]===70&&binary[4]===45
+ :mime==='image/png'?binary[0]===137&&binary[1]===80&&binary[2]===78&&binary[3]===71
+ :mime==='image/jpeg'?binary[0]===255&&binary[1]===216&&binary[2]===255
+ :binary.length>12&&new TextDecoder().decode(binary.slice(0,4))==='RIFF'&&new TextDecoder().decode(binary.slice(8,12))==='WEBP';
+ if(!match)throw E(400,'El comprobante no coincide con el formato declarado');
+ return {mime,raw,binary}
+}
+async function commitWrites(env,writes){return fs(env,':commit','POST',{writes})}
+
 async function route(req,env){
  const url=new URL(req.url),path=url.pathname.replace(/\/+$/,'')||'/',method=req.method;
  if(path==='/api/health')return {status:'ok',firestoreConfigured:!!env.GOOGLE_SERVICE_ACCOUNT,version:'1.0.0'};
@@ -90,6 +139,43 @@ async function route(req,env){
    const b=await readBody(req),slug=String(b.restaurantId||'').toLowerCase(),phone=String(b.phone||'').replace(/\D/g,''),pin=String(b.pin||'');await checkRestaurant(env,slug);if(!/^\d{9,13}$/.test(phone)||!/^[0-9]{6,8}$/.test(pin)||!String(b.name||'').trim()||String(b.name).length>100)throw E(400,'Nombre, teléfono o PIN inválidos');await enforceRate(env,'register:'+(req.headers.get('CF-Connecting-IP')||'unknown'));const id=clientId(slug,phone),pw=await hashPassword(pin,env);const newClient={restaurantId:slug,role:'customer',username:phone,name:String(b.name).trim(),phone,address:String(b.address||'').slice(0,250),...pw,createdAt:new Date().toISOString()};await create(env,'customers/'+id,newClient);return {registered:true};
  }
  const s=await authorize(req,env);
+
+ const quotePath=path==='/api/checkout/quote'&&method==='POST';
+ if(quotePath){return quoteOrder(env,s,await readBody(req))}
+ if(path==='/api/checkout/reservations'&&method==='POST'){
+  const q=await quoteOrder(env,s,await readBody(req));const id=crypto.randomUUID(),at=new Date().toISOString();
+  const record={...q,id,status:'awaiting_proof',createdAt:at,expiresAt:new Date(Date.now()+30*60*1000).toISOString(),submittedAt:null};
+  await create(env,'reservations/'+id,record);
+  return {id,expiresAt:record.expiresAt,totalCents:q.totalCents,foodCents:q.foodCents,shippingCents:q.shippingCents,bank:q.bank,date:q.date,optionName:q.optionName,quantity:q.quantity,address:q.address,zone:q.zone};
+ }
+ const reservationMatch=path.match(/^\/api\/checkout\/reservations\/([a-f0-9-]{36})(?:\/(submit))?$/);
+ if(reservationMatch){
+  role(s,'customer');const id=reservationMatch[1],reservation=await get(env,'reservations/'+id);
+  if(!reservation||reservation.customerId!==s.sub||reservation.restaurantId!==s.restaurantId)throw E(404,'Reserva no encontrada');
+  if(method==='GET'&&!reservationMatch[2])return {id,status:reservation.status,expiresAt:reservation.expiresAt,totalCents:reservation.totalCents,bank:reservation.bank,orderId:reservation.orderId||null};
+  if(method==='POST'&&reservationMatch[2]==='submit'){
+   if(reservation.status==='submitted'&&reservation.orderId)return {id:reservation.orderId,totalCents:reservation.totalCents,status:'pending'};
+   if(reservation.status!=='awaiting_proof'||reservation.expiresAt<=new Date().toISOString())throw E(409,'La reserva venció. Verifica el menú y crea otra antes de transferir.');
+   const b=await readBody(req),file=proofBytes(b.proof||{}),proofHash=await sha(file.binary),at=new Date().toISOString();
+   const person=await get(env,'customers/'+s.sub);if(!person)throw E(401,'Cliente no encontrado');
+   const bankReference=String(b.bankReference||'').trim().slice(0,100);
+   const order={...reservation,id,customerName:person.name,phone:person.phone,bankReference,
+     status:'pending',paymentStatus:'reported',receiptId:proofHash,createdAt:at,updatedAt:at};
+   delete order.__updateTime;delete order.expiresAt;delete order.submittedAt;delete order.orderId;
+   const receipt={restaurantId:s.restaurantId,orderId:id,customerId:s.sub,proofHash,mime:file.mime,base64:file.raw,
+     name:String(b.proof?.name||'comprobante').slice(0,100),createdAt:at};
+   const payment={orderId:id,restaurantId:s.restaurantId,customerId:s.sub,expectedCents:reservation.totalCents,
+     bankReference,verifiedReference:'',receivedCents:null,status:'reported',proofHash,createdAt:at,verifiedAt:null,verifiedBy:null};
+   const update={...reservation,status:'submitted',submittedAt:at,orderId:id};
+   const audit={orderId:id,restaurantId:s.restaurantId,action:'order_submitted',actor:s.sub,createdAt:at};
+   try{await commitWrites(env,[writeCreate('receipts/'+proofHash,receipt),writeCreate('orders/'+id,order),
+      writeCreate('payments/'+id,payment),writeUpdate('reservations/'+id,update,reservation.__updateTime),
+      writeCreate('audit/'+crypto.randomUUID(),audit)])}
+   catch(error){if(error.status===409)throw E(409,'Reserva procesada por otra solicitud o comprobante ya utilizado');throw error}
+   return {id,totalCents:reservation.totalCents,status:'pending',paymentStatus:'reported'}
+  }
+ }
+
  if(path==='/api/me'&&method==='GET')return {role:s.role,restaurantId:s.restaurantId||null,sub:s.sub};
  if(path==='/api/admin/restaurants'){
   role(s,'platform');if(method==='GET')return (await list(env,'restaurantes')).map(r=>({...publicRest(r),createdAt:r.createdAt}));
@@ -117,10 +203,7 @@ async function route(req,env){
  if(path==='/api/orders'&&method==='GET'){
   role(s,'owner','customer');const rows=await query(env,'orders',s.role==='owner'?'restaurantId':'customerId',s.role==='owner'?s.restaurantId:s.sub,300);return rows.map(({__updateTime,...a})=>a).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
  }
- if(path==='/api/orders'&&method==='POST'){
-  role(s,'customer');const b=await readBody(req),slug=s.restaurantId;const rest=await checkRestaurant(env,slug),m=await get(env,'menus/'+slug+'_'+b.date);if(!rest.bank?.bank||!rest.bank?.account)throw E(409,'El restaurante todavía no ha configurado su cuenta bancaria');if(!m?.published)throw E(409,'El menú ya no está disponible');const now=formatNow();if(b.date<now.date||b.date>new Date(Date.now()+8*86400000).toISOString().slice(0,10)||b.date===now.date&&now.time>=rest.cutoff)throw E(409,'Los pedidos para esa fecha están cerrados');const option=m.options.find(x=>x.id===b.optionId);if(!option)throw E(400,'Selecciona un plato válido');const qty=Number(b.quantity);if(!Number.isInteger(qty)||qty<1||qty>10)throw E(400,'Cantidad inválida');const address=String(b.address||'').trim();if(address.length<12||address.length>250)throw E(400,'Escribe una dirección completa');let shipping=0,zone='';if(rest.shipping.mode==='fixed')shipping=money(rest.shipping.fixedCents);if(rest.shipping.mode==='zones'){zone=String(b.zone||'');const found=rest.shipping.zones.find(z=>z.name===zone);if(!found)throw E(400,'Selecciona una zona de entrega');shipping=money(found.priceCents)}
-  const proof=b.proof||{},mime=String(proof.mime||''),raw=String(proof.base64||'');if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)||!raw||raw.length>560000||!/^[a-zA-Z0-9+/]+={0,2}$/.test(raw))throw E(400,'Adjunta un comprobante JPG, PNG, WEBP o PDF menor a 400 KB');const binary=un64(raw);const signatureOk=mime==='application/pdf'?binary[0]===37&&binary[1]===80&&binary[2]===68&&binary[3]===70&&binary[4]===45:mime==='image/png'?binary[0]===137&&binary[1]===80&&binary[2]===78&&binary[3]===71:mime==='image/jpeg'?binary[0]===255&&binary[1]===216&&binary[2]===255:mime==='image/webp'?new TextDecoder().decode(binary.slice(0,4))==='RIFF'&&new TextDecoder().decode(binary.slice(8,12))==='WEBP':false;if(!signatureOk)throw E(400,'El archivo no coincide con su formato');const proofHash=await sha(binary);const person=await get(env,'customers/'+s.sub);if(!person)throw E(401,'Cliente no encontrado');const id=crypto.randomUUID(),timestamp=new Date().toISOString();const receipt={restaurantId:slug,customerId:s.sub,orderId:id,proofHash,mime,base64:raw,name:String(proof.name||'comprobante').slice(0,100),createdAt:timestamp};const order={id,restaurantId:slug,customerId:s.sub,customerName:person.name,phone:person.phone,date:b.date,soup:m.soup,optionId:option.id,optionName:option.name,quantity:qty,foodCents:option.priceCents*qty,shippingCents:shipping,totalCents:option.priceCents*qty+shipping,zone,address,notes:String(b.notes||'').slice(0,300),bankReference:String(b.bankReference||'').slice(0,100),status:'pending',receiptId:proofHash,createdAt:timestamp,updatedAt:timestamp};await fs(env,':commit','POST',{writes:[createWrite('receipts/'+proofHash,receipt),createWrite('orders/'+id,order)]}).catch(error=>{if(error.status===409)throw E(409,'Este comprobante ya se utilizó en otro pedido');throw error});return {id,totalCents:order.totalCents,status:order.status};
- }
+ if(path==='/api/orders'&&method==='POST')throw E(409,'Antes de subir un comprobante debes confirmar el importe y reservar el pedido.');
  const attachment=path.match(/^\/api\/orders\/([a-f0-9-]{36})\/receipt$/);
  if(attachment&&method==='GET'){role(s,'owner','customer');const o=await get(env,'orders/'+attachment[1]);if(!o||o.restaurantId!==s.restaurantId||s.role==='customer'&&o.customerId!==s.sub)throw E(404,'Pedido no encontrado');const rec=await get(env,'receipts/'+(o.receiptId||o.id));if(!rec)throw E(404,'Comprobante no encontrado');return {mime:rec.mime,base64:rec.base64,name:rec.name,proofHash:rec.proofHash}}
  const statusMatch=path.match(/^\/api\/orders\/([a-f0-9-]{36})\/status$/);
