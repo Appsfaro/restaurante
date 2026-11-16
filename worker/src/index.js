@@ -83,7 +83,7 @@ async function quoteOrder(env,s,b,{enforceCutoff=true}={}){
  const menu=await get(env,'menus/'+slug+'_'+date);
  if(!menu?.published)throw E(409,'Menú no disponible');
  const option=(menu.options||[]).find(o=>o.id===String(b.optionId||''));
- if(!option)throw E(400,'Selecciona un plato disponible');
+ if(!option||option.available===false)throw E(400,'El plato seleccionado se ha agotado');
  const quantity=Number(b.quantity);
  if(!Number.isInteger(quantity)||quantity<1||quantity>10)throw E(400,'Solo puedes pedir de 1 a 10 almuerzos');
  const priceCents=amount(option.priceCents,'Precio de plato');if(priceCents<=0)throw E(409,'El plato no tiene precio válido');
@@ -157,7 +157,7 @@ async function route(req,env){
  const customerMatch=path.match(/^\/api\/public\/restaurants\/([a-z0-9_-]+)$/);
  if(method==='GET'&&customerMatch){const r=await checkRestaurant(env,customerMatch[1],true);return publicRest(r)}
  const menusMatch=path.match(/^\/api\/public\/menus\/([a-z0-9_-]+)$/);
- if(method==='GET'&&menusMatch){await checkRestaurant(env,menusMatch[1]);return (await query(env,'menus','restaurantId',menusMatch[1])).filter(m=>m.published).map(m=>({date:m.date,soup:m.soup,options:m.options||[],specials:m.specials||[],published:true}))}
+ if(method==='GET'&&menusMatch){await checkRestaurant(env,menusMatch[1]);return (await query(env,'menus','restaurantId',menusMatch[1])).filter(m=>m.published).map(m=>({date:m.date,soup:m.soup,options:(m.options||[]).filter(x=>x.available!==false),published:true}))}
  if(method==='POST'&&path==='/api/register'){
    const b=await readBody(req),slug=String(b.restaurantId||'').toLowerCase(),phone=String(b.phone||'').replace(/\D/g,''),pin=String(b.pin||'');await checkRestaurant(env,slug);if(!/^\d{9,13}$/.test(phone)||!/^[0-9]{6,8}$/.test(pin)||!String(b.name||'').trim()||String(b.name).length>100)throw E(400,'Nombre, teléfono o PIN inválidos');await enforceRate(env,'register:'+(req.headers.get('CF-Connecting-IP')||'unknown'));const id=clientId(slug,phone),pw=await hashPassword(pin,env);const newClient={restaurantId:slug,role:'customer',sessionVersion:1,username:phone,name:String(b.name).trim(),phone,address:String(b.address||'').slice(0,250),...pw,createdAt:new Date().toISOString()};await create(env,'customers/'+id,newClient);return {registered:true};
  }
@@ -224,11 +224,29 @@ async function route(req,env){
    const next={...old,cutoffs,name:String(b.name).trim().slice(0,100),primary:/^#[0-9a-fA-F]{6}$/.test(b.primary||'')?b.primary:old.primary,logo,bank,cutoff,shipping:delivery,phone:String(b.phone||'').slice(0,40),address:String(b.address||'').slice(0,250)};await put(env,'restaurantes/'+slug,next);return publicRest(next)
   }
  }
+
+ if(path==='/api/menus/clone-week'&&method==='POST'){
+  role(s,'owner');const slug=s.restaurantId;await checkRestaurant(env,slug);
+  const b=await readBody(req),monday=String(b.weekStart||'');
+  const parsed=new Date(monday+'T12:00:00Z');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(monday)||Number.isNaN(parsed.getTime())||parsed.getUTCDay()!==1)throw E(400,'Indica el lunes de la nueva semana');
+  const writes=[];let created=0;
+  for(let day=0;day<7;day++){
+   const target=new Date(parsed.getTime()+day*86400000),old=new Date(target.getTime()-7*86400000);
+   const date=target.toISOString().slice(0,10),prev=old.toISOString().slice(0,10);
+   const m=await get(env,'menus/'+slug+'_'+prev);if(!m)continue;
+   const doc={restaurantId:slug,date,soup:m.soup||'',options:m.options||[],published:false,updatedAt:new Date().toISOString()};
+   writes.push(writeCreate('menus/'+slug+'_'+date,doc));created++;
+  }
+  if(!created)throw E(404,'No hay menús en la semana anterior para copiar');
+  await commitWrites(env,writes);return {copied:created,published:false}
+ }
+
  if(path==='/api/menus'){
   role(s,'owner');const slug=s.restaurantId;
   if(method==='GET')return query(env,'menus','restaurantId',slug,250);
   if(method==='PUT'){
-   await checkRestaurant(env,slug);const b=await readBody(req);if(!/^\d{4}-\d{2}-\d{2}$/.test(b.date||''))throw E(400,'Fecha inválida');const options=(b.options||[]).slice(0,20).map((o,i)=>({id:'o'+(i+1),name:String(o.name||'').trim().slice(0,100),priceCents:money(Number(o.priceCents))})).filter(o=>o.name&&o.priceCents>0);if(b.published&&!options.length)throw E(400,'Para publicar, incluye al menos un segundo con precio');const doc={restaurantId:slug,date:b.date,soup:String(b.soup||'').slice(0,100),options,published:!!b.published,updatedAt:new Date().toISOString()};await put(env,'menus/'+slug+'_'+b.date,doc);return doc;
+   await checkRestaurant(env,slug);const b=await readBody(req);if(!/^\d{4}-\d{2}-\d{2}$/.test(b.date||''))throw E(400,'Fecha inválida');const options=(b.options||[]).slice(0,20).map((o,i)=>({id:'o'+(i+1),name:String(o.name||'').trim().slice(0,100),priceCents:money(Number(o.priceCents)),kind:o.kind==='special'?'special':'regular',available:o.available!==false})).filter(o=>o.name&&o.priceCents>0);if(b.published&&!options.length)throw E(400,'Para publicar, incluye al menos un segundo con precio');const doc={restaurantId:slug,date:b.date,soup:String(b.soup||'').slice(0,100),options,published:!!b.published,updatedAt:new Date().toISOString()};await put(env,'menus/'+slug+'_'+b.date,doc);return doc;
   }
  }
 
