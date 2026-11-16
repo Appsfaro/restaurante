@@ -63,7 +63,7 @@ function clientId(slug,phone){return slug+'_'+phone.replace(/\D/g,'')}
 const formatNow = () => {const p=new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Guayaquil',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const v=Object.fromEntries(p.map(x=>[x.type,x.value]));return {date:`${v.year}-${v.month}-${v.day}`,time:`${v.hour}:${v.minute}`}};
 function money(n){return Number.isSafeInteger(n)&&n>=0&&n<=1000000?n:0}
 function publicRest(r){return {slug:r.slug,name:r.name,logo:r.logo||'',primary:r.primary||'#18bfa1',bank:r.bank||{},cutoff:r.cutoff||'11:00',shipping:r.shipping||{mode:'free',fixedCents:0,zones:[]},active:r.active!==false,subscriptionUntil:r.subscriptionUntil||'',address:r.address||'',phone:r.phone||''}}
-async function readBody(req){const len=Number(req.headers.get('content-length')||0);if(len>750000)throw E(413,'Archivo demasiado grande');const data=await req.text();if(data.length>750000)throw E(413,'Solicitud demasiado grande');try{return JSON.parse(data||'{}')}catch{throw E(400,'Solicitud JSON inválida')}}
+async function readBody(req){const len=Number(req.headers.get('content-length')||0);if(len>4000000)throw E(413,'Archivo demasiado grande');const data=await req.text();if(data.length>4000000)throw E(413,'Solicitud demasiado grande');try{return JSON.parse(data||'{}')}catch{throw E(400,'Solicitud JSON inválida')}}
 async function enforceRate(env,key,success=false){const id=await sha(key),path='attempts/'+id,now=Date.now();const x=await get(env,path);if(!success&&x?.until&&x.until>now)throw E(429,'Demasiados intentos. Vuelve a intentarlo más tarde');const attempts=success?0:(x?.until&&x.until<=now?1:((x?.attempts||0)+1));await put(env,path,{attempts,until:attempts>=5?now+20*60*1000:0,updatedAt:new Date().toISOString()});}
 async function checkRestaurant(env,slug,allowExpired=false){if(!cleanId(slug))throw E(400,'Restaurante inválido');const r=await get(env,'restaurantes/'+slug);if(!r)throw E(404,'Restaurante no encontrado');if(!allowExpired&&(r.active===false||!r.subscriptionUntil||r.subscriptionUntil<formatNow().date))throw E(403,'El restaurante no tiene una suscripción activa');return r}
 
@@ -103,9 +103,9 @@ async function quoteOrder(env,s,b,{enforceCutoff=true}={}){
 }
 function proofBytes(proof){
  const mime=String(proof?.mime||''),raw=String(proof?.base64||'');
- if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)||!raw||raw.length>560000||!/^[a-zA-Z0-9+/]+={0,2}$/.test(raw))throw E(400,'Adjunta un comprobante PDF o imagen menor a 400 KB');
+ if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)||!raw||raw.length>2800000||!/^[a-zA-Z0-9+/]+={0,2}$/.test(raw))throw E(400,'Adjunta un comprobante PDF o imagen menor a 2 MB');
  let binary;try{binary=Uint8Array.from(atob(raw),c=>c.charCodeAt(0))}catch{throw E(400,'Archivo no válido')}
- if(binary.length>400000)throw E(413,'Comprobante demasiado grande');
+ if(binary.length>2000000)throw E(413,'Comprobante demasiado grande');
  const match=mime==='application/pdf'?binary[0]===37&&binary[1]===80&&binary[2]===68&&binary[3]===70&&binary[4]===45
  :mime==='image/png'?binary[0]===137&&binary[1]===80&&binary[2]===78&&binary[3]===71
  :mime==='image/jpeg'?binary[0]===255&&binary[1]===216&&binary[2]===255
@@ -114,6 +114,28 @@ function proofBytes(proof){
  return {mime,raw,binary}
 }
 async function commitWrites(env,writes){return fs(env,':commit','POST',{writes})}
+async function storeReceipt(env,key,binary,mime){
+ if(!env.RECEIPT_STORE?.put){
+  if(String(env.REQUIRE_OBJECT_STORAGE||'').toLowerCase()==='true')throw E(503,'Falta configurar el almacenamiento privado de comprobantes');
+  if(binary.length>390000)throw E(413,'Comprobante mayor que límite de Firestore; conecta almacenamiento privado');
+  return {base64:btoa(String.fromCharCode(...binary)),objectKey:null};
+ }
+ await env.RECEIPT_STORE.put(key,binary,{httpMetadata:{contentType:mime}});
+ return {base64:null,objectKey:key}
+}
+async function removeReceipt(env,key){if(key&&env.RECEIPT_STORE?.delete){await env.RECEIPT_STORE.delete(key).catch(()=>{})}}
+async function readReceipt(env,receipt){
+ if(receipt.objectKey){
+  if(!env.RECEIPT_STORE?.get)throw E(503,'Almacenamiento de comprobantes no configurado');
+  const blob=await env.RECEIPT_STORE.get(receipt.objectKey);
+  if(!blob)throw E(404,'Archivo del comprobante no disponible');
+  const arr=new Uint8Array(await blob.arrayBuffer());
+  return btoa(String.fromCharCode(...arr))
+ }
+ if(!receipt.base64)throw E(404,'Archivo no disponible');
+ return receipt.base64
+}
+
 
 async function route(req,env){
  const url=new URL(req.url),path=url.pathname.replace(/\/+$/,'')||'/',method=req.method;
@@ -169,7 +191,8 @@ async function route(req,env){
    const order={...reservation,id,customerName:person.name,phone:person.phone,bankReference,
      status:'pending',paymentStatus:'reported',receiptId:proofHash,createdAt:at,updatedAt:at};
    delete order.__updateTime;delete order.expiresAt;delete order.submittedAt;delete order.orderId;
-   const receipt={restaurantId:s.restaurantId,orderId:id,customerId:s.sub,proofHash,mime:file.mime,base64:file.raw,
+   const objectKey='comprobantes/'+s.restaurantId+'/'+id+'/'+proofHash;const stored=await storeReceipt(env,objectKey,file.binary,file.mime);
+   const receipt={restaurantId:s.restaurantId,orderId:id,customerId:s.sub,proofHash,mime:file.mime,...stored,
      name:String(b.proof?.name||'comprobante').slice(0,100),createdAt:at};
    const payment={orderId:id,restaurantId:s.restaurantId,customerId:s.sub,expectedCents:reservation.totalCents,
      bankReference,verifiedReference:'',receivedCents:null,status:'reported',proofHash,createdAt:at,verifiedAt:null,verifiedBy:null};
@@ -178,7 +201,7 @@ async function route(req,env){
    try{await commitWrites(env,[writeCreate('receipts/'+proofHash,receipt),writeCreate('orders/'+id,order),
       writeCreate('payments/'+id,payment),writeUpdate('reservations/'+id,update,reservation.__updateTime),
       writeCreate('audit/'+crypto.randomUUID(),audit)])}
-   catch(error){if(error.status===409)throw E(409,'Reserva procesada por otra solicitud o comprobante ya utilizado');throw error}
+   catch(error){await removeReceipt(env,stored.objectKey);if(error.status===409)throw E(409,'Reserva procesada por otra solicitud o comprobante ya utilizado');throw error}
    return {id,totalCents:reservation.totalCents,status:'pending',paymentStatus:'reported'}
   }
  }
@@ -212,7 +235,7 @@ async function route(req,env){
  }
  if(path==='/api/orders'&&method==='POST')throw E(409,'Antes de subir un comprobante debes confirmar el importe y reservar el pedido.');
  const attachment=path.match(/^\/api\/orders\/([a-f0-9-]{36})\/receipt$/);
- if(attachment&&method==='GET'){role(s,'owner','customer');const o=await get(env,'orders/'+attachment[1]);if(!o||o.restaurantId!==s.restaurantId||s.role==='customer'&&o.customerId!==s.sub)throw E(404,'Pedido no encontrado');const rec=await get(env,'receipts/'+(o.receiptId||o.id));if(!rec)throw E(404,'Comprobante no encontrado');return {mime:rec.mime,base64:rec.base64,name:rec.name,proofHash:rec.proofHash}}
+ if(attachment&&method==='GET'){role(s,'owner','customer');const o=await get(env,'orders/'+attachment[1]);if(!o||o.restaurantId!==s.restaurantId||s.role==='customer'&&o.customerId!==s.sub)throw E(404,'Pedido no encontrado');const rec=await get(env,'receipts/'+(o.receiptId||o.id));if(!rec)throw E(404,'Comprobante no encontrado');return {mime:rec.mime,base64:await readReceipt(env,rec),name:rec.name,proofHash:rec.proofHash}}
  const statusMatch=path.match(/^\/api\/orders\/([a-f0-9-]{36})\/status$/);
  if(statusMatch&&method==='PATCH'){
   role(s,'owner');const id=statusMatch[1],o=await get(env,'orders/'+id);
