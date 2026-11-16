@@ -347,7 +347,7 @@ async function route(req,env){
  throw E(404,'Ruta no encontrada');
 }
 export default {async fetch(request,env){
- const origin=request.headers.get('origin')||'',allowed=ALLOW_ORIGINS.includes(origin)?origin:'';
+ const origin=request.headers.get('origin')||'',siteOrigin=new URL(request.url).origin,allowed=(origin===siteOrigin||ALLOW_ORIGINS.includes(origin))?origin:'';
  if(request.method==='OPTIONS')return new Response(null,{status:204,headers:{...(allowed?{'access-control-allow-origin':allowed}:{}),'access-control-allow-methods':'GET,POST,PUT,PATCH,OPTIONS','access-control-allow-headers':'Content-Type,Authorization','access-control-max-age':'7200'}});
  try{if(origin&&!allowed)throw E(403,'Origen no permitido');const result=await route(request,env);return json(result,200,allowed)}catch(error){const status=error.status||500;return json({error:status===500?'Error interno del servidor':error.message},status,allowed)}
 }};
