@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: appsfaro-restaurantes
+    runtime: node
+    plan: starter
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "true"
+      - key: GOOGLE_SERVICE_ACCOUNT
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: PASSWORD_PEPPER
+        generateValue: true
+      - key: BOOTSTRAP_TOKEN
+        generateValue: true
