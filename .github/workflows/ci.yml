@@ -1,0 +1,21 @@
+name: Verificar Restaurantes
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Instalar dependencias
+        run: npm install --no-audit --no-fund
+      - name: Revisar sintaxis del servidor y API
+        run: |
+          node --check server/index.mjs
+          node --check worker/src/index.js
+      - name: Probar flujos
+        run: npm test
