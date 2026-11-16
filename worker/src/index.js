@@ -139,6 +139,13 @@ async function route(req,env){
    const b=await readBody(req),slug=String(b.restaurantId||'').toLowerCase(),phone=String(b.phone||'').replace(/\D/g,''),pin=String(b.pin||'');await checkRestaurant(env,slug);if(!/^\d{9,13}$/.test(phone)||!/^[0-9]{6,8}$/.test(pin)||!String(b.name||'').trim()||String(b.name).length>100)throw E(400,'Nombre, teléfono o PIN inválidos');await enforceRate(env,'register:'+(req.headers.get('CF-Connecting-IP')||'unknown'));const id=clientId(slug,phone),pw=await hashPassword(pin,env);const newClient={restaurantId:slug,role:'customer',username:phone,name:String(b.name).trim(),phone,address:String(b.address||'').slice(0,250),...pw,createdAt:new Date().toISOString()};await create(env,'customers/'+id,newClient);return {registered:true};
  }
  const s=await authorize(req,env);
+ if(s.role==='platform'){const admin=await get(env,'admins/root');if(!admin||s.sub!=='root'||admin.disabled)throw E(401,'Administrador deshabilitado')}
+ else if(s.role==='owner'||s.role==='customer'){
+  if(!cleanId(s.restaurantId)||!s.sub.startsWith(s.restaurantId+'_'))throw E(401,'Identidad inválida');
+  const record=await get(env,(s.role==='owner'?'users/':'customers/')+s.sub);
+  if(!record||record.role!==s.role||record.restaurantId!==s.restaurantId||record.disabled)throw E(401,'La cuenta está deshabilitada');
+ }else throw E(401,'Perfil inválido');
+
 
  const quotePath=path==='/api/checkout/quote'&&method==='POST';
  if(quotePath){return quoteOrder(env,s,await readBody(req))}
@@ -208,7 +215,65 @@ async function route(req,env){
  if(attachment&&method==='GET'){role(s,'owner','customer');const o=await get(env,'orders/'+attachment[1]);if(!o||o.restaurantId!==s.restaurantId||s.role==='customer'&&o.customerId!==s.sub)throw E(404,'Pedido no encontrado');const rec=await get(env,'receipts/'+(o.receiptId||o.id));if(!rec)throw E(404,'Comprobante no encontrado');return {mime:rec.mime,base64:rec.base64,name:rec.name,proofHash:rec.proofHash}}
  const statusMatch=path.match(/^\/api\/orders\/([a-f0-9-]{36})\/status$/);
  if(statusMatch&&method==='PATCH'){
-  role(s,'owner');const o=await get(env,'orders/'+statusMatch[1]);if(!o||o.restaurantId!==s.restaurantId)throw E(404,'Pedido no encontrado');const b=await readBody(req);const next=String(b.status||'');const allowed={pending:['confirmed','rejected'],confirmed:['preparing','rejected'],preparing:['in_route'],in_route:['delivered'],rejected:[],delivered:[]};if(!(allowed[o.status]||[]).includes(next))throw E(409,'No se permite ese cambio de estado');await put(env,'orders/'+o.id,{...o,status:next,updatedAt:new Date().toISOString(),verifiedBy:next==='confirmed'||next==='rejected'?s.sub:o.verifiedBy||null},'?currentDocument.updateTime='+encodeURIComponent(o.__updateTime));await create(env,'audit/'+crypto.randomUUID(),{orderId:o.id,restaurantId:o.restaurantId,action:next,actor:s.sub,createdAt:new Date().toISOString()});return {id:o.id,status:next};
+  role(s,'owner');const id=statusMatch[1],o=await get(env,'orders/'+id);
+  if(!o||o.restaurantId!==s.restaurantId)throw E(404,'Pedido no encontrado');
+  const b=await readBody(req),next=String(b.status||''),at=new Date().toISOString();
+  const allowed={pending:['confirmed','rejected'],confirmed:['preparing','refund_pending'],
+    preparing:['in_route','refund_pending'],in_route:['delivered'],delivered:[],rejected:[],
+    refund_pending:['refunded'],refunded:[]};
+  if(!(allowed[o.status]||[]).includes(next))throw E(409,'Transición de pedido no permitida');
+  const payment=await get(env,'payments/'+id);
+  if(!payment)throw E(409,'No existe registro de pago. Solicita conciliación.');
+  let newPayment={...payment};let extra=[];
+  if(next==='confirmed'){
+   const receivedCents=amount(Number(b.receivedCents),'Importe recibido');
+   if(receivedCents!==o.totalCents)throw E(409,'El importe acreditado no coincide con el total del pedido');
+   const reference=String(b.bankReference||'').trim().toUpperCase().replace(/\s+/g,'');
+   if(reference.length<5||reference.length>100)throw E(400,'Introduce el número real de operación bancaria');
+   const refId=await sha(o.restaurantId+':'+reference);
+   extra.push(writeCreate('bank_references/'+refId,{restaurantId:s.restaurantId,orderId:id,reference,receivedCents,createdAt:at}));
+   newPayment={...payment,status:'confirmed',verifiedReference:reference,receivedCents,verifiedAt:at,verifiedBy:s.sub};
+  }else if(next==='rejected'){
+   if(!String(b.reason||'').trim())throw E(400,'Escribe el motivo del rechazo');
+   newPayment={...payment,status:'rejected',rejectionReason:String(b.reason).trim().slice(0,300),verifiedAt:at,verifiedBy:s.sub}
+  }else if(next==='refund_pending'){
+   if(!String(b.reason||'').trim())throw E(400,'Escribe el motivo de la devolución');
+   newPayment={...payment,status:'refund_pending',refundReason:String(b.reason).trim().slice(0,300),refundRequestedAt:at,refundRequestedBy:s.sub};
+  }else if(next==='refunded'){
+   const reference=String(b.refundReference||'').trim().toUpperCase();
+   const returned=amount(Number(b.refundCents),'Importe devuelto');
+   if(reference.length<5||returned!==o.totalCents)throw E(400,'Registra la referencia bancaria real y devolución completa');
+   newPayment={...payment,status:'refunded',refundReference:reference,refundedCents:returned,refundedAt:at,refundedBy:s.sub};
+  }
+  const updated={...o,status:next,paymentStatus:newPayment.status,updatedAt:at,
+    verifiedBy:next==='confirmed'?s.sub:o.verifiedBy||null};
+  const event={orderId:id,restaurantId:s.restaurantId,action:next,actor:s.sub,createdAt:at,
+    paymentStatus:newPayment.status,reference:next==='confirmed'?newPayment.verifiedReference:undefined};
+  try{await commitWrites(env,[writeUpdate('orders/'+id,updated,o.__updateTime),writeUpdate('payments/'+id,newPayment,payment.__updateTime),
+    writeCreate('audit/'+crypto.randomUUID(),event),...extra])}
+  catch(error){if(error.status===409)throw E(409,'El pedido cambió o esta operación bancaria ya se utilizó');throw error}
+  return {id,status:next,paymentStatus:newPayment.status};
+ }
+ if(path==='/api/admin/subscription-payments'&&method==='GET'){
+  role(s,'platform');return list(env,'subscription_payments',250)
+ }
+ if(path==='/api/admin/subscription-payments'&&method==='POST'){
+  role(s,'platform');const b=await readBody(req),slug=String(b.restaurantId||'').toLowerCase();
+  const r=await checkRestaurant(env,slug,true),paid=amount(Number(b.amountCents),'Importe de suscripción');
+  if(!paid||!String(b.reference||'').trim()||!/^\d{4}-\d{2}-\d{2}$/.test(b.validThrough||''))throw E(400,'Registra importe, referencia y vencimiento');
+  const id=await sha('subscription:'+slug+':'+String(b.reference).trim().toUpperCase());
+  const at=new Date().toISOString(),payment={id,restaurantId:slug,amountCents:paid,reference:String(b.reference).trim().slice(0,100),
+    paidAt:at,validThrough:b.validThrough,registeredBy:s.sub,status:'confirmed_manual'};
+  await commitWrites(env,[writeCreate('subscription_payments/'+id,payment),
+    writeUpdate('restaurantes/'+slug,{...r,subscriptionUntil:b.validThrough,active:true},r.__updateTime),
+    writeCreate('audit/'+crypto.randomUUID(),{restaurantId:slug,action:'subscription_renewed',actor:s.sub,createdAt:at})]);
+  return {registered:true,id,validThrough:b.validThrough};
+ }
+ if(path==='/api/payment-ledger'&&method==='GET'){
+  role(s,'owner','platform');const rows=s.role==='platform'?await list(env,'payments',250):await query(env,'payments','restaurantId',s.restaurantId,250);
+  return rows.map(p=>({id:p.id,orderId:p.orderId,restaurantId:p.restaurantId,expectedCents:p.expectedCents,
+    receivedCents:p.receivedCents,status:p.status,bankReference:p.bankReference,verifiedReference:p.verifiedReference,
+    verifiedAt:p.verifiedAt,refundReference:p.refundReference,refundedAt:p.refundedAt}));
  }
  throw E(404,'Ruta no encontrada');
 }
