@@ -254,7 +254,7 @@ async function route(req,env){
   return {temporaryPin:pin,message:'Entrega el nuevo PIN al cliente de manera privada. No se volverá a mostrar.'}
  }
 
- if(path==='/api/customers'&&method==='GET'){role(s,'owner');return (await query(env,'customers','restaurantId',s.restaurantId)).map(c=>({name:c.name,phone:c.phone,address:c.address,createdAt:c.createdAt}))}
+ if(path==='/api/customers'&&method==='GET'){role(s,'owner');return (await query(env,'customers','restaurantId',s.restaurantId)).map(c=>({id:c.id,name:c.name,phone:c.phone,address:c.address,createdAt:c.createdAt}))}
  if(path==='/api/orders'&&method==='GET'){
   role(s,'owner','customer');const rows=await query(env,'orders',s.role==='owner'?'restaurantId':'customerId',s.role==='owner'?s.restaurantId:s.sub,300);return rows.map(({__updateTime,...a})=>a).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
  }
