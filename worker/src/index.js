@@ -62,7 +62,7 @@ function userId(slug,username){return slug+'_'+username.toLowerCase().replace(/[
 function clientId(slug,phone){return slug+'_'+phone.replace(/\D/g,'')}
 const formatNow = () => {const p=new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Guayaquil',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const v=Object.fromEntries(p.map(x=>[x.type,x.value]));return {date:`${v.year}-${v.month}-${v.day}`,time:`${v.hour}:${v.minute}`}};
 function money(n){return Number.isSafeInteger(n)&&n>=0&&n<=1000000?n:0}
-function publicRest(r){return {slug:r.slug,name:r.name,logo:r.logo||'',primary:r.primary||'#18bfa1',bank:r.bank||{},cutoff:r.cutoff||'11:00',shipping:r.shipping||{mode:'free',fixedCents:0,zones:[]},active:r.active!==false,subscriptionUntil:r.subscriptionUntil||'',address:r.address||'',phone:r.phone||''}}
+function publicRest(r){return {slug:r.slug,name:r.name,logo:r.logo||'',primary:r.primary||'#18bfa1',bank:r.bank||{},cutoff:r.cutoff||'11:00',cutoffs:r.cutoffs||{},shipping:r.shipping||{mode:'free',fixedCents:0,zones:[]},active:r.active!==false,subscriptionUntil:r.subscriptionUntil||'',address:r.address||'',phone:r.phone||''}}
 async function readBody(req){const len=Number(req.headers.get('content-length')||0);if(len>4000000)throw E(413,'Archivo demasiado grande');const data=await req.text();if(data.length>4000000)throw E(413,'Solicitud demasiado grande');try{return JSON.parse(data||'{}')}catch{throw E(400,'Solicitud JSON inválida')}}
 async function enforceRate(env,key,success=false){const id=await sha(key),path='attempts/'+id,now=Date.now();const x=await get(env,path);if(!success&&x?.until&&x.until>now)throw E(429,'Demasiados intentos. Vuelve a intentarlo más tarde');const attempts=success?0:(x?.until&&x.until<=now?1:((x?.attempts||0)+1));await put(env,path,{attempts,until:attempts>=5?now+20*60*1000:0,updatedAt:new Date().toISOString()});}
 async function checkRestaurant(env,slug,allowExpired=false){if(!cleanId(slug))throw E(400,'Restaurante inválido');const r=await get(env,'restaurantes/'+slug);if(!r)throw E(404,'Restaurante no encontrado');if(!allowExpired&&(r.active===false||!r.subscriptionUntil||r.subscriptionUntil<formatNow().date))throw E(403,'El restaurante no tiene una suscripción activa');return r}
@@ -142,7 +142,7 @@ async function route(req,env){
  const url=new URL(req.url),path=url.pathname.replace(/\/+$/,'')||'/',method=req.method;
  if(path==='/api/health')return {status:'ok',firestoreConfigured:!!env.GOOGLE_SERVICE_ACCOUNT,version:'1.0.0'};
  if(method==='POST'&&path==='/api/bootstrap'){
-   const b=await readBody(req);if(!env.BOOTSTRAP_TOKEN||b.setupToken!==env.BOOTSTRAP_TOKEN)throw E(403,'Clave de instalación incorrecta');if(await get(env,'admins/root'))throw E(409,'El administrador ya existe');if(!/^[a-zA-Z0-9._-]{4,50}$/.test(b.username||'')||String(b.password||'').length<12)throw E(400,'Usa un usuario válido y contraseña de al menos 12 caracteres');const pw=await hashPassword(b.password,env);await create(env,'admins/root',{username:b.username.toLowerCase(),name:b.name||'Administrador Apps Faro',role:'platform',...pw,createdAt:new Date().toISOString()});return {created:true};
+   const b=await readBody(req);if(!env.BOOTSTRAP_TOKEN||b.setupToken!==env.BOOTSTRAP_TOKEN)throw E(403,'Clave de instalación incorrecta');if(await get(env,'admins/root'))throw E(409,'El administrador ya existe');if(!/^[a-zA-Z0-9._-]{4,50}$/.test(b.username||'')||String(b.password||'').length<12)throw E(400,'Usa un usuario válido y contraseña de al menos 12 caracteres');const pw=await hashPassword(b.password,env);await create(env,'admins/root',{username:b.username.toLowerCase(),name:b.name||'Administrador Apps Faro',role:'platform',sessionVersion:1,...pw,createdAt:new Date().toISOString()});return {created:true};
  }
  if(method==='POST'&&path==='/api/login'){
    const b=await readBody(req),u=String(b.username||'').trim().toLowerCase(),pass=String(b.password||'');const slug=String(b.restaurantId||'').toLowerCase();if(!u||!pass||u.length>80)throw E(400,'Completa tus credenciales');const ip=req.headers.get('CF-Connecting-IP')||'unknown';const rateKey='login:'+ip+':'+slug+':'+u;await enforceRate(env,rateKey);let account;
@@ -152,21 +152,21 @@ async function route(req,env){
    else throw E(400,'Perfil inválido');
    if(!account||!(await compareHash(pass,account,env)))throw E(401,'Credenciales incorrectas');
    if(b.role!=='platform')await checkRestaurant(env,slug,true);
-   await enforceRate(env,rateKey,true);const user=safeUser(account);return {token:await signed({role:account.role,restaurantId:account.restaurantId||null,sub:account.role==='platform'?'root':(account.role==='owner'?userId(slug,u):clientId(slug,u))},env),user};
+   await enforceRate(env,rateKey,true);const user=safeUser(account);return {token:await signed({role:account.role,restaurantId:account.restaurantId||null,sub:account.role==='platform'?'root':(account.role==='owner'?userId(slug,u):clientId(slug,u)),sv:account.sessionVersion||1},env),user};
  }
  const customerMatch=path.match(/^\/api\/public\/restaurants\/([a-z0-9_-]+)$/);
  if(method==='GET'&&customerMatch){const r=await checkRestaurant(env,customerMatch[1],true);return publicRest(r)}
  const menusMatch=path.match(/^\/api\/public\/menus\/([a-z0-9_-]+)$/);
  if(method==='GET'&&menusMatch){await checkRestaurant(env,menusMatch[1]);return (await query(env,'menus','restaurantId',menusMatch[1])).filter(m=>m.published).map(m=>({date:m.date,soup:m.soup,options:m.options||[],specials:m.specials||[],published:true}))}
  if(method==='POST'&&path==='/api/register'){
-   const b=await readBody(req),slug=String(b.restaurantId||'').toLowerCase(),phone=String(b.phone||'').replace(/\D/g,''),pin=String(b.pin||'');await checkRestaurant(env,slug);if(!/^\d{9,13}$/.test(phone)||!/^[0-9]{6,8}$/.test(pin)||!String(b.name||'').trim()||String(b.name).length>100)throw E(400,'Nombre, teléfono o PIN inválidos');await enforceRate(env,'register:'+(req.headers.get('CF-Connecting-IP')||'unknown'));const id=clientId(slug,phone),pw=await hashPassword(pin,env);const newClient={restaurantId:slug,role:'customer',username:phone,name:String(b.name).trim(),phone,address:String(b.address||'').slice(0,250),...pw,createdAt:new Date().toISOString()};await create(env,'customers/'+id,newClient);return {registered:true};
+   const b=await readBody(req),slug=String(b.restaurantId||'').toLowerCase(),phone=String(b.phone||'').replace(/\D/g,''),pin=String(b.pin||'');await checkRestaurant(env,slug);if(!/^\d{9,13}$/.test(phone)||!/^[0-9]{6,8}$/.test(pin)||!String(b.name||'').trim()||String(b.name).length>100)throw E(400,'Nombre, teléfono o PIN inválidos');await enforceRate(env,'register:'+(req.headers.get('CF-Connecting-IP')||'unknown'));const id=clientId(slug,phone),pw=await hashPassword(pin,env);const newClient={restaurantId:slug,role:'customer',sessionVersion:1,username:phone,name:String(b.name).trim(),phone,address:String(b.address||'').slice(0,250),...pw,createdAt:new Date().toISOString()};await create(env,'customers/'+id,newClient);return {registered:true};
  }
  const s=await authorize(req,env);
- if(s.role==='platform'){const admin=await get(env,'admins/root');if(!admin||s.sub!=='root'||admin.disabled)throw E(401,'Administrador deshabilitado')}
+ if(s.role==='platform'){const admin=await get(env,'admins/root');if(!admin||s.sub!=='root'||admin.disabled||(admin.sessionVersion||1)!==s.sv)throw E(401,'Sesión del administrador inválida')}
  else if(s.role==='owner'||s.role==='customer'){
   if(!cleanId(s.restaurantId)||!s.sub.startsWith(s.restaurantId+'_'))throw E(401,'Identidad inválida');
   const record=await get(env,(s.role==='owner'?'users/':'customers/')+s.sub);
-  if(!record||record.role!==s.role||record.restaurantId!==s.restaurantId||record.disabled)throw E(401,'La cuenta está deshabilitada');
+  if(!record||record.role!==s.role||record.restaurantId!==s.restaurantId||record.disabled||(record.sessionVersion||1)!==s.sv)throw E(401,'Sesión revocada o cuenta deshabilitada');
  }else throw E(401,'Perfil inválido');
 
 
@@ -211,7 +211,7 @@ async function route(req,env){
  if(path==='/api/admin/restaurants'){
   role(s,'platform');if(method==='GET')return (await list(env,'restaurantes')).map(r=>({...publicRest(r),createdAt:r.createdAt}));
   if(method==='POST'){
-   const b=await readBody(req),slug=String(b.slug||'').trim().toLowerCase(),owner=String(b.ownerUsername||'').trim().toLowerCase();if(!cleanId(slug)||!/^\w[\w.-]{3,49}$/.test(owner)||String(b.ownerPassword||'').length<12||!String(b.name||'').trim())throw E(400,'Completa nombre, código y credenciales seguras');const doc={slug,name:String(b.name).trim().slice(0,100),active:true,subscriptionUntil:String(b.subscriptionUntil||formatNow().date),cutoff:'11:00',primary:'#18bfa1',shipping:{mode:'free',fixedCents:0,zones:[]},bank:{},createdAt:new Date().toISOString()};const pw=await hashPassword(b.ownerPassword,env);await create(env,'restaurantes/'+slug,doc);await create(env,'users/'+userId(slug,owner),{restaurantId:slug,role:'owner',username:owner,name:'Propietario',...pw,createdAt:doc.createdAt});return publicRest(doc);
+   const b=await readBody(req),slug=String(b.slug||'').trim().toLowerCase(),owner=String(b.ownerUsername||'').trim().toLowerCase();if(!cleanId(slug)||!/^\w[\w.-]{3,49}$/.test(owner)||String(b.ownerPassword||'').length<12||!String(b.name||'').trim())throw E(400,'Completa nombre, código y credenciales seguras');const doc={slug,name:String(b.name).trim().slice(0,100),active:true,subscriptionUntil:String(b.subscriptionUntil||formatNow().date),cutoff:'11:00',cutoffs:{},primary:'#18bfa1',shipping:{mode:'free',fixedCents:0,zones:[]},bank:{},createdAt:new Date().toISOString()};const pw=await hashPassword(b.ownerPassword,env);await create(env,'restaurantes/'+slug,doc);await create(env,'users/'+userId(slug,owner),{restaurantId:slug,role:'owner',sessionVersion:1,username:owner,name:'Propietario',...pw,createdAt:doc.createdAt});return publicRest(doc);
   }
  }
  const adminSingle=path.match(/^\/api\/admin\/restaurants\/([a-z0-9_-]+)$/);
@@ -220,7 +220,8 @@ async function route(req,env){
   role(s,'owner');const slug=s.restaurantId;const old=await checkRestaurant(env,slug,true);
   if(method==='GET')return publicRest(old);
   if(method==='PATCH'){
-   const b=await readBody(req);if(!String(b.name||'').trim())throw E(400,'Escribe el nombre');const mode=b.shipping?.mode||'free';if(!['free','fixed','zones'].includes(mode))throw E(400,'Modalidad de envío inválida');const zones=(b.shipping?.zones||[]).slice(0,30).map(z=>({name:String(z.name||'').slice(0,60),priceCents:money(Number(z.priceCents))})).filter(z=>z.name);if(mode==='zones'&&!zones.length)throw E(400,'Agrega al menos una zona de entrega');const delivery={mode,fixedCents:money(Number(b.shipping?.fixedCents||0)),zones};const bank={bank:String(b.bank?.bank||'').slice(0,100),owner:String(b.bank?.owner||'').slice(0,100),account:String(b.bank?.account||'').slice(0,80),type:String(b.bank?.type||'').slice(0,50)};const cutoff=/^([01]\d|2[0-3]):[0-5]\d$/.test(b.cutoff||'')?b.cutoff:'11:00';const logo=String(b.logo||'');if(logo.length>100000||logo&&!/^data:image\/(png|jpeg|webp);base64,[a-zA-Z0-9+/=]+$/.test(logo))throw E(400,'El logo debe ser una imagen pequeña');const next={...old,name:String(b.name).trim().slice(0,100),primary:/^#[0-9a-fA-F]{6}$/.test(b.primary||'')?b.primary:old.primary,logo,bank,cutoff,shipping:delivery,phone:String(b.phone||'').slice(0,40),address:String(b.address||'').slice(0,250)};await put(env,'restaurantes/'+slug,next);return publicRest(next)
+   const b=await readBody(req);if(!String(b.name||'').trim())throw E(400,'Escribe el nombre');const mode=b.shipping?.mode||'free';if(!['free','fixed','zones'].includes(mode))throw E(400,'Modalidad de envío inválida');const zones=(b.shipping?.zones||[]).slice(0,30).map(z=>({name:String(z.name||'').slice(0,60),priceCents:money(Number(z.priceCents))})).filter(z=>z.name);if(mode==='zones'&&!zones.length)throw E(400,'Agrega al menos una zona de entrega');const delivery={mode,fixedCents:money(Number(b.shipping?.fixedCents||0)),zones};const bank={bank:String(b.bank?.bank||'').slice(0,100),owner:String(b.bank?.owner||'').slice(0,100),account:String(b.bank?.account||'').slice(0,80),type:String(b.bank?.type||'').slice(0,50)};const cutoff=/^([01]\d|2[0-3]):[0-5]\d$/.test(b.cutoff||'')?b.cutoff:'11:00';const logo=String(b.logo||'');if(logo.length>100000||logo&&!/^data:image\/(png|jpeg|webp);base64,[a-zA-Z0-9+/=]+$/.test(logo))throw E(400,'El logo debe ser una imagen pequeña');const cutoffs=Object.fromEntries(Object.entries(b.cutoffs||{}).filter(([day,t])=>/^[0-6]$/.test(day)&&cleanTime(t)));
+   const next={...old,cutoffs,name:String(b.name).trim().slice(0,100),primary:/^#[0-9a-fA-F]{6}$/.test(b.primary||'')?b.primary:old.primary,logo,bank,cutoff,shipping:delivery,phone:String(b.phone||'').slice(0,40),address:String(b.address||'').slice(0,250)};await put(env,'restaurantes/'+slug,next);return publicRest(next)
   }
  }
  if(path==='/api/menus'){
@@ -230,6 +231,29 @@ async function route(req,env){
    await checkRestaurant(env,slug);const b=await readBody(req);if(!/^\d{4}-\d{2}-\d{2}$/.test(b.date||''))throw E(400,'Fecha inválida');const options=(b.options||[]).slice(0,20).map((o,i)=>({id:'o'+(i+1),name:String(o.name||'').trim().slice(0,100),priceCents:money(Number(o.priceCents))})).filter(o=>o.name&&o.priceCents>0);if(b.published&&!options.length)throw E(400,'Para publicar, incluye al menos un segundo con precio');const doc={restaurantId:slug,date:b.date,soup:String(b.soup||'').slice(0,100),options,published:!!b.published,updatedAt:new Date().toISOString()};await put(env,'menus/'+slug+'_'+b.date,doc);return doc;
   }
  }
+
+ if(path==='/api/account/change-secret'&&method==='POST'){
+  role(s,'platform','owner','customer');const b=await readBody(req),oldSecret=String(b.currentSecret||''),newSecret=String(b.newSecret||'');
+  const collection=s.role==='platform'?'admins':s.role==='owner'?'users':'customers';
+  const key=s.role==='platform'?'root':s.sub,pathDoc=collection+'/'+key;
+  const u=await get(env,pathDoc);
+  if(!u||!(await compareHash(oldSecret,u,env)))throw E(401,'La contraseña actual no coincide');
+  if(s.role==='customer'?!/^\d{6,8}$/.test(newSecret):newSecret.length<12)throw E(400,'La nueva clave no cumple con la longitud requerida');
+  const newHash=await hashPassword(newSecret,env);
+  await put(env,pathDoc,{...u,...newHash,sessionVersion:(u.sessionVersion||1)+1},'?currentDocument.updateTime='+encodeURIComponent(u.__updateTime));
+  await create(env,'audit/'+crypto.randomUUID(),{action:'secret_changed',actor:s.sub,role:s.role,createdAt:new Date().toISOString()});
+  return {changed:true,relogin:true}
+ }
+ const customerReset=path.match(/^\/api\/customers\/([a-z0-9_-]+)\/reset-pin$/);
+ if(customerReset&&method==='POST'){
+  role(s,'owner');const c=await get(env,'customers/'+customerReset[1]);if(!c||c.restaurantId!==s.restaurantId)throw E(404,'Cliente no encontrado');
+  const pin=String(crypto.getRandomValues(new Uint32Array(1))[0]%1000000).padStart(6,'0');
+  const hashed=await hashPassword(pin,env);
+  await put(env,'customers/'+c.id,{...c,...hashed,sessionVersion:(c.sessionVersion||1)+1},'?currentDocument.updateTime='+encodeURIComponent(c.__updateTime));
+  await create(env,'audit/'+crypto.randomUUID(),{action:'customer_pin_reset',actor:s.sub,customerId:c.id,restaurantId:s.restaurantId,createdAt:new Date().toISOString()});
+  return {temporaryPin:pin,message:'Entrega el nuevo PIN al cliente de manera privada. No se volverá a mostrar.'}
+ }
+
  if(path==='/api/customers'&&method==='GET'){role(s,'owner');return (await query(env,'customers','restaurantId',s.restaurantId)).map(c=>({name:c.name,phone:c.phone,address:c.address,createdAt:c.createdAt}))}
  if(path==='/api/orders'&&method==='GET'){
   role(s,'owner','customer');const rows=await query(env,'orders',s.role==='owner'?'restaurantId':'customerId',s.role==='owner'?s.restaurantId:s.sub,300);return rows.map(({__updateTime,...a})=>a).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
