@@ -2,7 +2,7 @@ services:
   - type: web
     name: appsfaro-restaurantes
     runtime: node
-    plan: starter
+    plan: free  # Solo para pruebas; elegir Starter para operación comercial continua
     buildCommand: npm install --omit=dev
     startCommand: npm start
     healthCheckPath: /healthz
@@ -19,3 +19,13 @@ services:
         generateValue: true
       - key: BOOTSTRAP_TOKEN
         generateValue: true
+      - key: R2_ENDPOINT
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: REQUIRE_OBJECT_STORAGE
+        value: "true"
